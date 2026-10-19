@@ -1,0 +1,18 @@
+# Замените shopuser и /home/shopuser/shop-bot на своё имя и реальный путь.
+# Сначала установите зависимости в .venv и заполните .env в папке проекта.
+[Unit]
+Description=Telegram shoe shop staff bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=shopuser
+WorkingDirectory=/home/shopuser/shop-bot
+ExecStart=/home/shopuser/shop-bot/.venv/bin/python -m shoe_shop_bot
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
