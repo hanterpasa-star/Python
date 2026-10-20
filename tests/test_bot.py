@@ -37,7 +37,7 @@ class OfflineTelegram(BaseRequest):
         self.calls.append((api_method, data))
         if api_method == "getMe":
             result = {"id": 123456, "is_bot": True, "first_name": "Shop", "username": "offline_shop_bot"}
-        elif api_method in {"sendMessage", "sendPhoto"}:
+        elif api_method in {"sendMessage", "sendPhoto", "sendDocument"}:
             self.sequence += 1
             chat_id = int(data["chat_id"])
             result = {
@@ -47,6 +47,8 @@ class OfflineTelegram(BaseRequest):
             }
             if api_method == "sendPhoto":
                 result.update(caption=data.get("caption", ""), photo=[{"file_id": "photo", "file_unique_id": "unique", "width": 100, "height": 100}])
+            elif api_method == "sendDocument":
+                result.update(caption=data.get("caption", ""), document={"file_id": "backup", "file_unique_id": "backup-unique", "file_name": "backup.sqlite3"})
             else:
                 result["text"] = data.get("text", "")
         else:

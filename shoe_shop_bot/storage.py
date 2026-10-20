@@ -7,6 +7,7 @@ import sqlite3
 import time
 
 from .stock import changed_stock, validate_stock, validate_title
+from .inventory import InventoryFeatures
 
 
 class NotFound(Exception):
@@ -29,6 +30,8 @@ class Product:
     stock: dict[str, int]
     version: int
     archived: bool = False
+    category: str = ""
+    code: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,7 +40,7 @@ class Actor:
     name: str
 
 
-class Store:
+class Store(InventoryFeatures):
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +79,7 @@ class Store:
                     added_at TEXT NOT NULL
                 );
             """)
+        self.migrate()
 
     @contextmanager
     def connect(self):
@@ -90,7 +94,7 @@ class Store:
 
     @staticmethod
     def _product(row: sqlite3.Row) -> Product:
-        return Product(row["id"], row["title"], row["photo"], json.loads(row["stock"]), row["version"], bool(row["archived"]))
+        return Product(row["id"], row["title"], row["photo"], json.loads(row["stock"]), row["version"], bool(row["archived"]), row["category"], row["code"])
 
     def get(self, product_id: int) -> Product:
         with self.connect() as db:
@@ -99,22 +103,38 @@ class Store:
             raise NotFound
         return self._product(row)
 
-    def page(self, *, include_empty: bool = False, offset: int = 0, limit: int = 6) -> tuple[list[Product], int]:
+    def page(self, *, include_empty: bool = False, offset: int = 0, limit: int = 6, query: str = "", category: str | None = None, sort: str = "newest") -> tuple[list[Product], int]:
         where = "archived=0" + ("" if include_empty else " AND stock <> '{}'")
         with self.connect() as db:
-            count = db.execute(f"SELECT COUNT(*) FROM products WHERE {where}").fetchone()[0]
-            rows = db.execute(f"SELECT * FROM products WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?", (limit, max(0, offset))).fetchall()
-        return [self._product(row) for row in rows], count
+            rows = db.execute(f"SELECT * FROM products WHERE {where} ORDER BY id DESC").fetchall()
+        products = [self._product(row) for row in rows]
+        if category is not None:
+            products = [p for p in products if p.category == category]
+        if query:
+            q = " ".join(query.casefold().split())
+            products = [p for p in products if q in p.title.casefold() or q.lstrip("#") == str(p.id)
+                        or q in p.stock or q == p.code.casefold()]
+        if sort == "title":
+            products.sort(key=lambda p: (p.title.casefold(), p.id))
+        elif sort == "size":
+            products.sort(key=lambda p: (min(map(float, p.stock), default=float("inf")), p.title.casefold(), p.id))
+        elif sort != "newest":
+            raise ValueError("Неизвестный порядок сортировки.")
+        return products[max(0, offset):max(0, offset) + limit], len(products)
 
     @staticmethod
-    def _event(db, product: Product, action: str, actor: Actor, before: Product | None, targets) -> int:
+    def _event(db, product: Product, action: str, actor: Actor, before: Product | None, targets, **extra) -> int:
         payload = {
             "product_id": product.id, "title": product.title, "photo": product.photo,
             "stock": product.stock, "action": action,
             "actor_id": actor.id, "actor_name": " ".join(actor.name.split())[:60],
             "before_stock": before.stock if before else None,
             "before_title": before.title if before else None,
+            "category": product.category, "code": product.code,
         }
+        payload.update(extra)
+        payload["low_stock"] = [size for size, qty in (before.stock.items() if before else [])
+                                if qty > product.stock.get(size, 0) and product.stock.get(size, 0) <= 1]
         cursor = db.execute(
             "INSERT INTO events(product_id,payload,created_at) VALUES (?,?,?)",
             (product.id, json.dumps(payload, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
@@ -143,6 +163,7 @@ class Store:
             if old.version != version:
                 raise Conflict
             title, photo, stock, archived = old.title, old.photo, old.stock, False
+            category, code = old.category, old.code
             if action in {"add_sizes", "remove_sizes", "set_sizes"}:
                 stock = changed_stock(stock, action, value)
             elif action == "rename":
@@ -153,12 +174,21 @@ class Store:
                 photo = value
             elif action == "archive":
                 archived = True
+            elif action == "category":
+                category = self.validate_category(value)
+                if category:
+                    existing = db.execute("SELECT DISTINCT category FROM products WHERE category<>''").fetchall()
+                    category = next((r[0] for r in existing if r[0].casefold() == category.casefold()), category)
+            elif action == "code":
+                code = self.validate_code(value)
+                if code and db.execute("SELECT 1 FROM products WHERE code=? AND id<>?", (code, old.id)).fetchone():
+                    raise ValueError("Этот код уже занят другим товаром.")
             else:
                 raise ValueError("Неизвестное действие.")
-            if (title, photo, stock, archived) == (old.title, old.photo, old.stock, old.archived):
+            if (title, photo, stock, archived, category, code) == (old.title, old.photo, old.stock, old.archived, old.category, old.code):
                 raise NoChange
-            product = Product(old.id, title, photo, stock, old.version + 1, archived)
-            db.execute("UPDATE products SET title=?,photo=?,stock=?,version=?,archived=? WHERE id=?", (title, photo, json.dumps(stock), product.version, int(archived), old.id))
+            product = Product(old.id, title, photo, stock, old.version + 1, archived, category, code)
+            db.execute("UPDATE products SET title=?,photo=?,stock=?,version=?,archived=?,category=?,code=? WHERE id=?", (title, photo, json.dumps(stock), product.version, int(archived), category, code, old.id))
             self._event(db, product, action, actor, old, targets)
         return product
 
@@ -209,10 +239,12 @@ class Store:
             raise ValueError("Нужен положительный числовой ID пользователя Telegram.")
         with self.connect() as db:
             db.execute("INSERT OR IGNORE INTO staff(user_id,added_at) VALUES (?,?)", (user_id, datetime.now(timezone.utc).isoformat()))
+            db.execute("UPDATE access_requests SET status='approved' WHERE user_id=?", (user_id,))
 
     def revoke(self, user_id: int):
         with self.connect() as db:
             db.execute("DELETE FROM staff WHERE user_id=?", (user_id,))
+            db.execute("UPDATE access_requests SET status='denied',created_at=? WHERE user_id=?", (datetime.now(timezone.utc).isoformat(), user_id))
             db.execute("UPDATE deliveries SET status='cancelled' WHERE chat_id=? AND status='pending'", (user_id,))
 
     def backup(self, destination: Path):

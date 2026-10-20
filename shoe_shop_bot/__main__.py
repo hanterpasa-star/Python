@@ -1,10 +1,13 @@
 import logging
+from logging.handlers import RotatingFileHandler
+import os
 import sys
 
 from telegram.error import InvalidToken, NetworkError, TelegramError
 
 from .bot import build_application
 from .config import Settings
+from .process import AlreadyRunning, instance_lock
 
 
 class TokenSafeFormatter(logging.Formatter):
@@ -30,9 +33,19 @@ def main() -> int:
         return 2
     for handler in logging.getLogger().handlers:
         handler.setFormatter(TokenSafeFormatter(settings.token))
+    if os.getenv("BOT_BACKGROUND") == "1":
+        directory = settings.database_path.parent / "logs"
+        directory.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(directory / "bot.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(TokenSafeFormatter(settings.token))
+        logging.getLogger().handlers = [handler]
     try:
-        application = build_application(settings)
-        application.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=False)
+        with instance_lock(settings.database_path.parent / "bot.lock"):
+            application = build_application(settings)
+            application.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=False)
+    except AlreadyRunning:
+        print("Бот уже запущен из этой базы. Сначала остановите предыдущую копию.", file=sys.stderr)
+        return 3
     except InvalidToken:
         print("Telegram не принял токен. Проверьте BOT_TOKEN в .env. Сам токен не отправляйте в чат.", file=sys.stderr)
         return 2

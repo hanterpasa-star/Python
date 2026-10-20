@@ -5,6 +5,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import hashlib
+import json
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class WindowsLauncherTests(unittest.TestCase):
     def test_cmd_files_have_portable_encoding_and_line_endings(self):
-        for name in ["START_BOT.bat", "EDIT_SETTINGS.bat"]:
+        for name in ["START_BOT.bat", "EDIT_SETTINGS.bat", "ENABLE_AUTOSTART.bat", "DISABLE_AUTOSTART.bat"]:
             with self.subTest(name=name):
                 content = (ROOT / name).read_bytes()
                 content.decode("ascii")
@@ -44,3 +46,33 @@ class WindowsLauncherTests(unittest.TestCase):
             self.assertNotIn(b"is not recognized", output)
             self.assertEqual((checkout / ".env").read_bytes(), settings)
             self.assertFalse((checkout / "data").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Requires Windows Task Scheduler")
+    def test_autostart_task_registration_without_launching_a_bot(self):
+        probe = subprocess.run(["powershell.exe", "-NoProfile", "-Command", "(Get-Service Schedule).Status"], capture_output=True, text=True, timeout=20)
+        if probe.returncode or "Running" not in probe.stdout:
+            self.skipTest("Task Scheduler service is unavailable")
+        with tempfile.TemporaryDirectory(prefix="shop task ") as temporary:
+            checkout = Path(temporary) / "shop"
+            shutil.copytree(ROOT, checkout, ignore=shutil.ignore_patterns(".git", ".venv", ".env", "__pycache__", "data", "backups"))
+            subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", str(checkout / ".venv")], check=True, timeout=60)
+            (checkout / ".env").write_text("BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyzABCDE\nOWNER_ID=101\n", encoding="utf-8")
+            child_env = os.environ.copy()
+            for name in ["BOT_TOKEN", "OWNER_ID", "DATABASE_PATH"]:
+                child_env.pop(name, None)
+            script = checkout / "deploy" / "windows-autostart.ps1"
+            args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+            task = "ShoeShopBot-" + hashlib.sha256(str(checkout).lower().encode()).hexdigest()[:8].upper()
+            try:
+                result = subprocess.run(args + ["-RegisterOnly"], env=child_env, capture_output=True, text=True, timeout=40)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                query = f"Get-ScheduledTask -TaskName '{task}' | Select-Object State,Actions,Triggers,Settings | ConvertTo-Json -Depth 5 -Compress"
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", query], capture_output=True, text=True, timeout=20, check=True)
+                data = json.loads(result.stdout)
+                self.assertEqual(data["Actions"][0]["Arguments"], "-m shoe_shop_bot.supervisor")
+                self.assertEqual(Path(data["Actions"][0]["WorkingDirectory"]), checkout)
+                self.assertEqual(data["Settings"]["ExecutionTimeLimit"], "PT0S")
+                self.assertEqual(data["Settings"]["RestartCount"], 3)
+                self.assertFalse((checkout / "data").exists(), "Registration must not run the bot")
+            finally:
+                subprocess.run(args + ["-Remove"], capture_output=True, timeout=30)

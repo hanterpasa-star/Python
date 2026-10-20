@@ -2,6 +2,7 @@ import asyncio
 from contextlib import suppress
 import logging
 import secrets
+import time
 
 from telegram import (
     BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -17,6 +18,9 @@ from .config import Settings
 from .notifications import ACTION_NAMES, notification_loop
 from .stock import changed_stock, format_stock, parse_size_list, parse_stock, validate_title
 from .storage import Actor, Conflict, NoChange, NotFound, Product, Store
+from .features import (BotFeatures, SELL_BUTTON, SEARCH_BUTTON, REPORT_BUTTON,
+                       SECTIONS_BUTTON, SUMMARY_BUTTON, SALES_BUTTON, SCAN_BUTTON)
+from .maintenance import maintenance_loop
 
 
 log = logging.getLogger(__name__)
@@ -27,15 +31,18 @@ STAFF_BUTTON = "👥 Сотрудники"
 PAGE_SIZE = 6
 
 
-class ShopBot:
+class ShopBot(BotFeatures):
     def __init__(self, settings: Settings, store: Store):
         self.settings, self.store = settings, store
+        self.started_at = time.monotonic()
 
     def allowed(self, user_id: int) -> bool:
         return self.settings.is_owner(user_id) or self.store.is_staff(user_id)
 
     def menu(self, user_id: int) -> ReplyKeyboardMarkup:
-        rows = [[STOCK_BUTTON], [EDIT_BUTTON, ADD_BUTTON]]
+        rows = [[STOCK_BUTTON, SELL_BUTTON], [EDIT_BUTTON, ADD_BUTTON],
+                [SEARCH_BUTTON, SECTIONS_BUTTON], [SALES_BUTTON, REPORT_BUTTON],
+                [SUMMARY_BUTTON, SCAN_BUTTON]]
         if self.settings.is_owner(user_id):
             rows.append([STAFF_BUTTON])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -50,10 +57,12 @@ class ShopBot:
             if update.callback_query:
                 await update.callback_query.answer("Доступ закрыт. Обратитесь к владельцу магазина.", show_alert=True)
             else:
-                text = f"Это закрытый бот сотрудников.\nВаш Telegram ID: {user.id}\nПередайте его владельцу магазина для получения доступа."
+                text = f"Это закрытый бот сотрудников.\nВаш Telegram ID: {user.id}\nНажмите «Запросить доступ» — владелец сможет разрешить его кнопкой."
                 if owner and self.allowed(user.id):
                     text = "Эта команда доступна только владельцу магазина."
                 await message.reply_text(text, reply_markup=ReplyKeyboardRemove())
+                if not owner and chat.type == "private" and self.settings.owner_id:
+                    await message.reply_text("Доступ выдаёт владелец магазина.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 Запросить доступ", callback_data="request_access")]]))
             return False
         if private and chat.type != "private":
             text = "Каталог и редактирование доступны только в личной переписке с ботом."
@@ -85,14 +94,21 @@ class ShopBot:
 
     @staticmethod
     def card(product: Product) -> str:
-        return f"👟 {product.title}\nАртикул: #{product.id}\n\nРазмер × количество пар:\n{format_stock(product.stock)}"
+        return f"👟 {product.title}\nАртикул: #{product.id}\nРаздел: {product.category or 'Без раздела'}" + (f"\nКод: {product.code}" if product.code else "") + f"\n\nРазмер × количество пар:\n{format_stock(product.stock)}"
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.require_access(update, context):
             return
         context.user_data.pop("draft", None)
+        context.user_data.pop("catalog_filter", None)
+        if context.args and len(context.args) == 1 and context.args[0].startswith("p_"):
+            try:
+                return await self.scan_input(update, context, context.args[0])
+            except (ValueError, NotFound):
+                await update.effective_message.reply_text("Товар по этому QR-коду не найден. Откройте /stock.")
+                return
         await update.effective_message.reply_text(
-            "Магазин обуви 👟\n\n📦 В наличии — фото и доступные размеры.\n✏️ Изменить наличие — добавить или убрать размеры, поменять фото.\n➕ Добавить товар — новая модель.\n\n/cancel — отменить ввод, /history — последние изменения, /help — помощь.",
+            "Магазин обуви 👟\n\n📦 В наличии — фото и размеры.\n💰 Продано — одна или несколько позиций, цена в гривнах.\n✏️ Изменить наличие — размеры, фото, раздел и код.\n➕ Добавить товар — новая модель.\n🔎 Поиск — название, размер, номер или код.\n🧾 Продажи и возвраты — посмотреть, вернуть или отменить.\n📊 Отчёты — продажи и выручка за период.\n\n/cancel — отменить ввод, /help — помощь.",
             reply_markup=self.menu(update.effective_user.id),
         )
 
@@ -110,21 +126,29 @@ class ShopBot:
             "Чтобы уменьшить количество с 3 до 2, выберите «Задать всё наличие» и укажите новые остатки.\n"
             "«-» в полном наличии означает, что все размеры закончились."
         )
+        text += ("\n\n/sell — новая продажа; /cart — текущая корзина\n/sales — продажи, возвраты и отмена\n/find — поиск\n/sections — разделы\n/scan — штрихкод или QR\n/summary — сводка остатков\n/report — отчёты и популярные модели / размеры\n"
+                 "При продаже цена вводится за ОДНУ пару в гривнах. Остатки спишутся после подтверждения. Возврат учитывается по исходной цене.\n"
+                 "Возвраты и отмены записываются в отчёт на дату операции.")
         if self.settings.is_owner(update.effective_user.id):
             text += "\n\n/staff — сотрудники\n/grant ID — выдать доступ\n/revoke ID — отозвать доступ\n/notify_here — подключить рабочую группу\n/status — состояние уведомлений"
+            text += "\n/requests — запросы доступа\n/backup — получить резервную копию\n/report_time — время вечернего отчёта (Киев)"
         await update.effective_message.reply_text(text)
 
     async def listing(self, update: Update, context, mode="stock", page=0):
         if not await self.require_access(update, context):
             return
         context.user_data.pop("draft", None)
-        products, total = self.store.page(include_empty=mode == "edit", offset=page * PAGE_SIZE, limit=PAGE_SIZE)
+        selection = context.user_data.get("catalog_filter", {})
+        selection = dict(selection, sort=context.user_data.get("catalog_sort", "title"))
+        products, total = self.store.page(include_empty=mode == "edit", offset=page * PAGE_SIZE, limit=PAGE_SIZE, **selection)
         if not products and total and page:
             page = (total - 1) // PAGE_SIZE
-            products, total = self.store.page(include_empty=mode == "edit", offset=page * PAGE_SIZE, limit=PAGE_SIZE)
+            products, total = self.store.page(include_empty=mode == "edit", offset=page * PAGE_SIZE, limit=PAGE_SIZE, **selection)
         title = "📦 В наличии" if mode == "stock" else "✏️ Выберите товар для изменения"
+        if selection.get("query") or "category" in selection:
+            title += "\nФильтр: " + (selection.get("query") or selection.get("category") or "Без раздела")
         if not products:
-            await update.effective_message.reply_text(title + "\n\nСписок пуст. Добавьте товар через /add.")
+            await update.effective_message.reply_text(title + ("\n\nНичего не найдено. /find — новый поиск, /stock — весь каталог." if selection.get("query") or "category" in selection else "\n\nСписок пуст. Добавьте товар через /add."))
             return
         rows = []
         for product in products:
@@ -140,15 +164,18 @@ class ShopBot:
             rows.append(navigation)
         if mode == "edit":
             rows.append([InlineKeyboardButton(ADD_BUTTON, callback_data="add")])
+        rows.append([InlineKeyboardButton("↕️ Сортировка", callback_data=f"sortmenu:{mode}")])
         await update.effective_message.reply_text(
-            f"{title}\nТоваров: {total}. Страница {page + 1}.\nНажмите на модель, чтобы открыть фото и размеры.",
+            f"{title}\nТоваров: {total}. Страница {page + 1}.\nПорядок: { {'title': 'по названию', 'newest': 'сначала новые', 'size': 'по размеру' }[selection['sort']]}\nНажмите на модель, чтобы открыть фото и размеры.",
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
     async def stock_command(self, update: Update, context):
+        context.user_data.pop("catalog_filter", None)
         await self.listing(update, context)
 
     async def edit_command(self, update: Update, context):
+        context.user_data.pop("catalog_filter", None)
         await self.listing(update, context, "edit")
 
     async def show_product(self, update: Update, context, product_id: int, mode="stock"):
@@ -162,11 +189,15 @@ class ShopBot:
                 ("➕ Добавить размеры", "add_sizes"), ("➖ Убрать размеры", "remove_sizes"),
                 ("✏️ Задать всё наличие", "set_sizes"), ("📷 Заменить фото", "photo"),
                 ("✏️ Название", "rename"),
+                ("🗂 Раздел", "category"), ("🏷 Код", "code"),
             ]:
                 rows.append([InlineKeyboardButton(label, callback_data=f"edit:{action}:{product.id}:{product.version}")])
             rows.append([InlineKeyboardButton("🗑 Убрать товар из каталога", callback_data=f"archive:ask:{product.id}:{product.version}")])
         else:
             rows.append([InlineKeyboardButton(EDIT_BUTTON, callback_data=f"view:edit:{product.id}")])
+        if product.stock:
+            rows.append([InlineKeyboardButton(SELL_BUTTON, callback_data=f"sellp:{product.id}")])
+        rows.append([InlineKeyboardButton("QR-код товара", callback_data=f"qr:{product.id}")])
         rows.append([InlineKeyboardButton("← К списку", callback_data=f"list:{mode}:0")])
         await update.effective_message.reply_photo(product.photo, caption=self.card(product), reply_markup=InlineKeyboardMarkup(rows))
 
@@ -192,6 +223,8 @@ class ShopBot:
             "set_sizes": "Напишите всё актуальное наличие: 36:2, 37, 38.5.\nЭто полностью заменит текущий список. «-» — всё закончилось.",
             "rename": "Напишите новое название модели (до 100 символов).",
             "photo": "Пришлите новое фото как фотографию, а не как файл.",
+            "category": "Напишите раздел: например Nike, Adidas или Кроссовки. «-» — без раздела.",
+            "code": "Необязательно: напишите штрихкод с коробки или пришлите его фото. Можно свой код: до 64 латинских букв, цифр, точек, дефисов или _. «-» — убрать код. Без кода товар тоже работает.",
         }
         if action not in prompts:
             raise ValueError("Неизвестная кнопка.")
@@ -203,18 +236,25 @@ class ShopBot:
             return
         text = update.effective_message.text or ""
         if text == STOCK_BUTTON:
-            return await self.listing(update, context)
+            return await self.stock_command(update, context)
         if text == EDIT_BUTTON:
-            return await self.listing(update, context, "edit")
+            return await self.edit_command(update, context)
         if text == ADD_BUTTON:
             return await self.add(update, context)
         if text == STAFF_BUTTON:
             return await self.staff(update, context)
+        handlers = {SELL_BUTTON: self.sell, SEARCH_BUTTON: self.find, REPORT_BUTTON: self.reports,
+                    SECTIONS_BUTTON: self.sections, SUMMARY_BUTTON: self.summary,
+                    SALES_BUTTON: self.sales, SCAN_BUTTON: self.scan}
+        if text in handlers:
+            return await handlers[text](update, context)
         draft = context.user_data.get("draft")
         if not draft:
             await update.effective_message.reply_text("Выберите действие в меню: /start")
             return
         try:
+            if await self.feature_message(update, context, draft, text):
+                return
             if draft["stage"] == "confirm":
                 await update.effective_message.reply_text("Нажмите «Сохранить» под карточкой или /cancel.")
                 return
@@ -241,8 +281,10 @@ class ShopBot:
             await update.effective_message.reply_text("Какие размеры есть?\nПример: 36, 37:2, 38.5.\nБез количества — одна пара; 37:2 — две пары размера 37.")
         elif draft["stage"] == "stock":
             draft["stock"] = parse_stock(text)
+            duplicates = self.store.duplicates(draft["title"])
+            warning = "⚠️ Уже есть модель с таким названием: " + ", ".join(f"#{p.id}" for p in duplicates[:5]) + ". Проверьте, нужен ли ещё один товар.\n\n" if duplicates else ""
             await update.effective_message.reply_photo(
-                draft["photo"], caption=f"Проверьте новый товар:\n{draft['title']}\nРазмер × количество пар:\n{format_stock(draft['stock'])}",
+                draft["photo"], caption=warning + f"Проверьте новый товар:\n{draft['title']}\nРазмер × количество пар:\n{format_stock(draft['stock'])}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сохранить", callback_data=f"save:{draft['nonce']}")], [InlineKeyboardButton("Отмена", callback_data="cancel")]]),
             )
             draft["stage"] = "confirm"
@@ -255,6 +297,15 @@ class ShopBot:
             value = update.effective_message.photo[-1].file_id
         elif action == "rename":
             value = validate_title(text)
+        elif action == "category":
+            value = self.store.validate_category(text)
+        elif action == "code":
+            if update.effective_message.photo:
+                from .codes import decode_image
+                file = await update.effective_message.photo[-1].get_file()
+                data = await file.download_as_bytearray()
+                text = (await asyncio.to_thread(decode_image, bytes(data)))[0]
+            value = self.store.validate_code(text)
         elif action == "remove_sizes":
             value = parse_size_list(text)
         else:
@@ -270,7 +321,7 @@ class ShopBot:
         elif action == "photo":
             photo = value
         await update.effective_message.reply_photo(
-            photo, caption=f"Проверьте изменения:\n{title}\nБыло: {format_stock(product.stock)}\nБудет: {format_stock(stock)}",
+            photo, caption=f"Проверьте изменения:\n{title}\nБыло: {format_stock(product.stock)}\nБудет: {format_stock(stock)}" + (f"\n{'Раздел' if action == 'category' else 'Код'}: {value or 'не задан'}" if action in {"category", "code"} else ""),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сохранить", callback_data=f"save:{draft['nonce']}")], [InlineKeyboardButton("Отмена", callback_data="cancel")]]),
         )
         draft.update(value=value, stage="confirm")
@@ -289,13 +340,17 @@ class ShopBot:
         await self.show_product(update, context, product.id, "edit")
 
     async def callback(self, update: Update, context):
+        if await self.access_callback(update, context):
+            return
         if not await self.require_access(update, context):
             return
         query = update.callback_query
         await query.answer()
         parts = (query.data or "").split(":")
         try:
-            if parts == ["cancel"]:
+            if await self.feature_callback(update, context, parts):
+                return
+            elif parts == ["cancel"]:
                 await self.cancel(update, context)
             elif parts == ["add"]:
                 await self.add(update, context)
@@ -325,17 +380,19 @@ class ShopBot:
                     raise ValueError("Неизвестная кнопка.")
             else:
                 raise ValueError("Кнопка устарела. Откройте /start.")
-        except (ValueError, OverflowError):
-            await update.effective_message.reply_text("Не удалось применить действие. Проверьте ввод или откройте /start.")
+        except ValueError as exc:
+            await update.effective_message.reply_text(str(exc) or "Не удалось применить действие. Откройте /start.")
+        except OverflowError:
+            await update.effective_message.reply_text("Некорректное число. Откройте /start.")
         except Conflict:
             context.user_data.pop("draft", None)
-            await update.effective_message.reply_text("Другой сотрудник уже изменил этот товар. Ваши изменения не сохранены. Откройте свежую карточку через /edit и повторите действие.")
+            await update.effective_message.reply_text("Другой сотрудник уже изменил этот товар. Ваши изменения не сохранены. Откройте свежую карточку через /edit; для продажи соберите корзину заново через /sell.")
         except NotFound:
             context.user_data.pop("draft", None)
-            await update.effective_message.reply_text("Товар уже убран из каталога. Откройте /edit.")
+            await update.effective_message.reply_text("Товар или продажа не найдены. Откройте актуальный список: /edit или /sales.")
         except NoChange:
             context.user_data.pop("draft", None)
-            await update.effective_message.reply_text("Наличие уже совпадает с указанным. Ничего не изменилось. /edit")
+            await update.effective_message.reply_text("Действие уже выполнено или данные совпадают. Ничего не изменилось. /edit — товары, /sales — продажи.")
 
     async def staff(self, update: Update, context):
         if not await self.require_access(update, context, owner=True):
@@ -343,7 +400,7 @@ class ShopBot:
         context.user_data.pop("draft", None)
         ids = self.store.staff_ids()
         text = f"Владелец: {self.settings.owner_id}\nСотрудники:\n" + ("\n".join(map(str, ids)) or "Пока нет сотрудников.")
-        text += "\n\nВыдать доступ: /grant 123456789\nОтозвать доступ: /revoke 123456789\n\nСотрудник должен открыть бота и отправить /id, затем передать вам полученный ID."
+        text += "\n\nСотрудник может открыть /start и нажать «Запросить доступ». Вам придут кнопки «Разрешить» / «Отказать».\n/requests — необработанные запросы.\nВыдать доступ вручную: /grant 123456789\nОтозвать доступ: /revoke 123456789"
         # Split large staff lists at Telegram's message limit.
         for start in range(0, len(text), 4000):
             await update.effective_message.reply_text(text[start:start + 4000])
@@ -405,21 +462,8 @@ class ShopBot:
         await update.effective_message.reply_text("\n\n".join(lines) if lines else "Изменений пока нет.")
 
     async def status(self, update: Update, context):
-        if not await self.require_access(update, context, owner=True):
-            return
-        counts = self.store.delivery_counts()
-        targets = self.targets()
-        text = (
-            f"Бот работает. Сотрудников: {len(self.store.staff_ids())}.\n"
-            f"Режим уведомлений: {self.settings.notification_mode}\n"
-            f"Получатели: {', '.join(map(str, targets)) or 'не настроены'}\n"
-            f"Отправлено: {counts.get('sent', 0)}\nВ очереди: {counts.get('pending', 0)}\n"
-            f"Не доставлено: {counts.get('failed', 0)}\n\n"
-            "Если сообщение не доставлено: для личных уведомлений сотрудник должен открыть /start и не блокировать бота. "
-            "В группе бот должен иметь право отправлять сообщения и фото. Устраните причину и проверьте следующее изменение товара. "
-            "При временном обрыве связи очередь повторяет отправку автоматически."
-        )
-        await update.effective_message.reply_text(text)
+        return await self.status_features(update, context)
+
 
 
 async def on_error(update, context):
@@ -442,18 +486,25 @@ def build_application(settings: Settings, store: Store | None = None, *, request
             BotCommand("edit", "Изменить наличие"), BotCommand("add", "Добавить товар"),
             BotCommand("history", "Последние изменения"), BotCommand("id", "Мой Telegram ID"),
             BotCommand("cancel", "Отменить ввод"), BotCommand("help", "Помощь"),
+            BotCommand("sell", "Новая продажа"), BotCommand("cart", "Корзина продажи"),
+            BotCommand("sales", "Продажи и возвраты"), BotCommand("find", "Поиск"),
+            BotCommand("sections", "Разделы"), BotCommand("scan", "Штрихкод / QR"),
+            BotCommand("summary", "Остатки"), BotCommand("report", "Отчёты"),
+            BotCommand("request_access", "Запросить доступ"),
         ])
         application.bot_data["notification_task"] = asyncio.create_task(notification_loop(application.bot, store, settings.owner_id))
+        application.bot_data["maintenance_task"] = asyncio.create_task(maintenance_loop(store, settings.owner_id))
         log.info("Бот запущен. Откройте /start в Telegram.")
         if not settings.owner_id:
             log.warning("OWNER_ID пуст. Доступ закрыт всем: узнайте свой ID через /id, заполните OWNER_ID и перезапустите бота.")
 
     async def post_stop(application):
-        task = application.bot_data.get("notification_task")
-        if task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        for name in ("notification_task", "maintenance_task"):
+            task = application.bot_data.get(name)
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     builder = Application.builder().token(settings.token).concurrent_updates(False).post_init(post_init).post_stop(post_stop)
     if request is not None:
@@ -465,6 +516,11 @@ def build_application(settings: Settings, store: Store | None = None, *, request
         ("help", shop.help), ("staff", shop.staff), ("grant", shop.grant),
         ("revoke", shop.revoke), ("notify_here", shop.notify_here),
         ("history", shop.history), ("status", shop.status),
+        ("sell", shop.sell), ("cart", shop.cart), ("sales", shop.sales),
+        ("find", shop.find), ("sections", shop.sections), ("scan", shop.scan),
+        ("summary", shop.summary), ("report", shop.reports),
+        ("report_time", shop.report_time), ("backup", shop.backup_command),
+        ("request_access", shop.request_access), ("requests", shop.requests),
     ]:
         application.add_handler(CommandHandler(command, handler))
     application.add_handler(CallbackQueryHandler(shop.callback))
