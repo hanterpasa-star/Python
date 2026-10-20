@@ -9,6 +9,10 @@ sys.path.insert(0, str(ROOT))
 
 
 def main():
+    # Windows redirected consoles may otherwise reject Russian assertion text.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"), top_level_dir=str(ROOT))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if os.getenv("GITHUB_ACTIONS") == "true":
