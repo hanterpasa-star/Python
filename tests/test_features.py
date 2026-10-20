@@ -106,22 +106,18 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.add_sale_item(product)
         nonce = self.draft()["nonce"]
         self.request.calls.clear()
-        for command in ["/sell", "/cart", "/sales", "/find Nike", "/sections", "/scan p_1", "/summary", "/report", "/report_time 19:00", "/backup", "/requests", "/status"]:
+        for command in ["/sell", "/cart", "/sales", "/find Nike", "/sections", "/summary", "/report", "/report_time 19:00", "/backup", "/requests", "/status"]:
             await self.update(user=202, text=command)
-        for callback in ["sale:1", "return:1:1", "voidask:1", "report:month", "qr:1", f"checkout:{nonce}"]:
+        for callback in ["sale:1", "return:1:1", "voidask:1", "report:month", f"checkout:{nonce}"]:
             await self.update(user=202, callback=callback)
         self.assertNotIn("Nike", self.texts())
         self.assertFalse(any(method in {"sendPhoto", "sendDocument"} for method, _ in self.request.calls))
         self.assertEqual(self.store.sales_page()[1], 0)
 
-    async def test_optional_codes_create_without_them_then_search_sections_and_qr(self):
+    async def test_product_creation_search_and_brand_sections(self):
         product, _ = await self.create_product()
-        self.assertEqual(product.code, "")
         await self.update(callback=f"edit:category:{product.id}:1")
         await self.update(text="Nike")
-        await self.update(callback=f"save:{self.draft()['nonce']}")
-        await self.update(callback=f"edit:code:{product.id}:2")
-        await self.update(text="4820012345678")
         await self.update(callback=f"save:{self.draft()['nonce']}")
         await self.update(text="/find БЕЛЫЕ")
         self.assertIn("Фильтр: БЕЛЫЕ", self.texts())
@@ -129,13 +125,26 @@ class FeatureFlowTests(unittest.IsolatedAsyncioTestCase):
         nonce = self.app.user_data[101]["sections"]["nonce"]
         await self.update(callback=f"section:{nonce}:0")
         self.assertIn("Фильтр: Nike", self.texts())
-        await self.update(text="/scan 4820012345678")
-        await self.update(text="/start p_1")
-        await self.update(callback="qr:1")
-        self.assertIn("QR товара #1", self.texts())
+
+    async def test_removed_code_buttons_are_not_offered_and_old_buttons_do_not_change_stock(self):
+        product, _ = await self.create_product()
         self.request.calls.clear()
-        await self.update(user=202, text="/start p_1")
+        await self.update(text="/start")
+        await self.update(text="/help")
+        await self.update(callback=f"view:edit:{product.id}")
+        for _, data in self.request.calls:
+            markup = data.get("reply_markup", {}) or {}
+            rows = markup.get("keyboard", []) + markup.get("inline_keyboard", [])
+            for row in rows:
+                for button in row:
+                    self.assertNotIn("QR", button["text"])
+                    self.assertNotIn("Сканировать", button["text"])
+                    self.assertNotEqual(button.get("callback_data"), f"edit:code:{product.id}:1")
+        self.request.calls.clear()
+        await self.update(callback=f"qr:{product.id}")
+        await self.update(callback=f"edit:code:{product.id}:1")
         self.assertFalse(any(method == "sendPhoto" for method, _ in self.request.calls))
+        self.assertEqual(self.store.get(product.id), product)
 
     async def test_duplicate_warning_is_visible_before_save_and_can_be_cancelled(self):
         product, _ = await self.create_product()

@@ -19,7 +19,7 @@ from .notifications import ACTION_NAMES, notification_loop
 from .stock import changed_stock, format_stock, parse_size_list, parse_stock, validate_title
 from .storage import Actor, Conflict, NoChange, NotFound, Product, Store
 from .features import (BotFeatures, SELL_BUTTON, SEARCH_BUTTON, REPORT_BUTTON,
-                       SECTIONS_BUTTON, SUMMARY_BUTTON, SALES_BUTTON, SCAN_BUTTON)
+                       SECTIONS_BUTTON, SUMMARY_BUTTON, SALES_BUTTON)
 from .maintenance import maintenance_loop
 
 
@@ -42,7 +42,7 @@ class ShopBot(BotFeatures):
     def menu(self, user_id: int) -> ReplyKeyboardMarkup:
         rows = [[STOCK_BUTTON, SELL_BUTTON], [EDIT_BUTTON, ADD_BUTTON],
                 [SEARCH_BUTTON, SECTIONS_BUTTON], [SALES_BUTTON, REPORT_BUTTON],
-                [SUMMARY_BUTTON, SCAN_BUTTON]]
+                [SUMMARY_BUTTON]]
         if self.settings.is_owner(user_id):
             rows.append([STAFF_BUTTON])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -94,21 +94,15 @@ class ShopBot(BotFeatures):
 
     @staticmethod
     def card(product: Product) -> str:
-        return f"👟 {product.title}\nАртикул: #{product.id}\nРаздел: {product.category or 'Без раздела'}" + (f"\nКод: {product.code}" if product.code else "") + f"\n\nРазмер × количество пар:\n{format_stock(product.stock)}"
+        return f"👟 {product.title}\nАртикул: #{product.id}\nРаздел: {product.category or 'Без раздела'}\n\nРазмер × количество пар:\n{format_stock(product.stock)}"
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self.require_access(update, context):
             return
         context.user_data.pop("draft", None)
         context.user_data.pop("catalog_filter", None)
-        if context.args and len(context.args) == 1 and context.args[0].startswith("p_"):
-            try:
-                return await self.scan_input(update, context, context.args[0])
-            except (ValueError, NotFound):
-                await update.effective_message.reply_text("Товар по этому QR-коду не найден. Откройте /stock.")
-                return
         await update.effective_message.reply_text(
-            "Магазин обуви 👟\n\n📦 В наличии — фото и размеры.\n💰 Продано — одна или несколько позиций, цена в гривнах.\n✏️ Изменить наличие — размеры, фото, раздел и код.\n➕ Добавить товар — новая модель.\n🔎 Поиск — название, размер, номер или код.\n🧾 Продажи и возвраты — посмотреть, вернуть или отменить.\n📊 Отчёты — продажи и выручка за период.\n\n/cancel — отменить ввод, /help — помощь.",
+            "Магазин обуви 👟\n\n📦 В наличии — фото и размеры.\n💰 Продано — одна или несколько позиций, цена в гривнах.\n✏️ Изменить наличие — размеры, фото и раздел.\n➕ Добавить товар — новая модель.\n🔎 Поиск — название, размер или номер товара.\n🧾 Продажи и возвраты — посмотреть, вернуть или отменить.\n📊 Отчёты — продажи и выручка за период.\n\n/cancel — отменить ввод, /help — помощь.",
             reply_markup=self.menu(update.effective_user.id),
         )
 
@@ -126,7 +120,7 @@ class ShopBot(BotFeatures):
             "Чтобы уменьшить количество с 3 до 2, выберите «Задать всё наличие» и укажите новые остатки.\n"
             "«-» в полном наличии означает, что все размеры закончились."
         )
-        text += ("\n\n/sell — новая продажа; /cart — текущая корзина\n/sales — продажи, возвраты и отмена\n/find — поиск\n/sections — разделы\n/scan — штрихкод или QR\n/summary — сводка остатков\n/report — отчёты и популярные модели / размеры\n"
+        text += ("\n\n/sell — новая продажа; /cart — текущая корзина\n/sales — продажи, возвраты и отмена\n/find — поиск\n/sections — разделы\n/summary — сводка остатков\n/report — отчёты и популярные модели / размеры\n"
                  "При продаже цена вводится за ОДНУ пару в гривнах. Остатки спишутся после подтверждения. Возврат учитывается по исходной цене.\n"
                  "Возвраты и отмены записываются в отчёт на дату операции.")
         if self.settings.is_owner(update.effective_user.id):
@@ -189,7 +183,7 @@ class ShopBot(BotFeatures):
                 ("➕ Добавить размеры", "add_sizes"), ("➖ Убрать размеры", "remove_sizes"),
                 ("✏️ Задать всё наличие", "set_sizes"), ("📷 Заменить фото", "photo"),
                 ("✏️ Название", "rename"),
-                ("🗂 Раздел", "category"), ("🏷 Код", "code"),
+                ("🗂 Раздел", "category"),
             ]:
                 rows.append([InlineKeyboardButton(label, callback_data=f"edit:{action}:{product.id}:{product.version}")])
             rows.append([InlineKeyboardButton("🗑 Убрать товар из каталога", callback_data=f"archive:ask:{product.id}:{product.version}")])
@@ -197,7 +191,6 @@ class ShopBot(BotFeatures):
             rows.append([InlineKeyboardButton(EDIT_BUTTON, callback_data=f"view:edit:{product.id}")])
         if product.stock:
             rows.append([InlineKeyboardButton(SELL_BUTTON, callback_data=f"sellp:{product.id}")])
-        rows.append([InlineKeyboardButton("QR-код товара", callback_data=f"qr:{product.id}")])
         rows.append([InlineKeyboardButton("← К списку", callback_data=f"list:{mode}:0")])
         await update.effective_message.reply_photo(product.photo, caption=self.card(product), reply_markup=InlineKeyboardMarkup(rows))
 
@@ -224,7 +217,6 @@ class ShopBot(BotFeatures):
             "rename": "Напишите новое название модели (до 100 символов).",
             "photo": "Пришлите новое фото как фотографию, а не как файл.",
             "category": "Напишите раздел: например Nike, Adidas или Кроссовки. «-» — без раздела.",
-            "code": "Необязательно: напишите штрихкод с коробки или пришлите его фото. Можно свой код: до 64 латинских букв, цифр, точек, дефисов или _. «-» — убрать код. Без кода товар тоже работает.",
         }
         if action not in prompts:
             raise ValueError("Неизвестная кнопка.")
@@ -245,7 +237,7 @@ class ShopBot(BotFeatures):
             return await self.staff(update, context)
         handlers = {SELL_BUTTON: self.sell, SEARCH_BUTTON: self.find, REPORT_BUTTON: self.reports,
                     SECTIONS_BUTTON: self.sections, SUMMARY_BUTTON: self.summary,
-                    SALES_BUTTON: self.sales, SCAN_BUTTON: self.scan}
+                    SALES_BUTTON: self.sales}
         if text in handlers:
             return await handlers[text](update, context)
         draft = context.user_data.get("draft")
@@ -299,13 +291,6 @@ class ShopBot(BotFeatures):
             value = validate_title(text)
         elif action == "category":
             value = self.store.validate_category(text)
-        elif action == "code":
-            if update.effective_message.photo:
-                from .codes import decode_image
-                file = await update.effective_message.photo[-1].get_file()
-                data = await file.download_as_bytearray()
-                text = (await asyncio.to_thread(decode_image, bytes(data)))[0]
-            value = self.store.validate_code(text)
         elif action == "remove_sizes":
             value = parse_size_list(text)
         else:
@@ -321,7 +306,7 @@ class ShopBot(BotFeatures):
         elif action == "photo":
             photo = value
         await update.effective_message.reply_photo(
-            photo, caption=f"Проверьте изменения:\n{title}\nБыло: {format_stock(product.stock)}\nБудет: {format_stock(stock)}" + (f"\n{'Раздел' if action == 'category' else 'Код'}: {value or 'не задан'}" if action in {"category", "code"} else ""),
+            photo, caption=f"Проверьте изменения:\n{title}\nБыло: {format_stock(product.stock)}\nБудет: {format_stock(stock)}" + (f"\nРаздел: {value or 'не задан'}" if action == "category" else ""),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Сохранить", callback_data=f"save:{draft['nonce']}")], [InlineKeyboardButton("Отмена", callback_data="cancel")]]),
         )
         draft.update(value=value, stage="confirm")
@@ -488,7 +473,7 @@ def build_application(settings: Settings, store: Store | None = None, *, request
             BotCommand("cancel", "Отменить ввод"), BotCommand("help", "Помощь"),
             BotCommand("sell", "Новая продажа"), BotCommand("cart", "Корзина продажи"),
             BotCommand("sales", "Продажи и возвраты"), BotCommand("find", "Поиск"),
-            BotCommand("sections", "Разделы"), BotCommand("scan", "Штрихкод / QR"),
+            BotCommand("sections", "Разделы"),
             BotCommand("summary", "Остатки"), BotCommand("report", "Отчёты"),
             BotCommand("request_access", "Запросить доступ"),
         ])
@@ -517,7 +502,7 @@ def build_application(settings: Settings, store: Store | None = None, *, request
         ("revoke", shop.revoke), ("notify_here", shop.notify_here),
         ("history", shop.history), ("status", shop.status),
         ("sell", shop.sell), ("cart", shop.cart), ("sales", shop.sales),
-        ("find", shop.find), ("sections", shop.sections), ("scan", shop.scan),
+        ("find", shop.find), ("sections", shop.sections),
         ("summary", shop.summary), ("report", shop.reports),
         ("report_time", shop.report_time), ("backup", shop.backup_command),
         ("request_access", shop.request_access), ("requests", shop.requests),

@@ -1,13 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
-from PIL import Image
-import zxingcpp
-
-from shoe_shop_bot.codes import decode_image, product_reference, qr_image
 from shoe_shop_bot.maintenance import maintenance_tick, make_backup, schedule_reports
 from shoe_shop_bot.process import AlreadyRunning, instance_lock
 from shoe_shop_bot.storage import Actor, NoChange, Store
@@ -19,26 +14,6 @@ class MaintenanceTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.store = Store(Path(self.temp.name) / "shop.sqlite3")
         self.product = self.store.create("Модель", "photo", {"38": 2}, Actor(101, "Owner"))
-
-    def test_qr_round_trip_and_input_validation(self):
-        image = qr_image(self.product.id, "test_shop_bot")
-        text = decode_image(image.read())[0]
-        self.assertEqual(product_reference(text, "test_shop_bot"), ("id", "1"))
-        self.assertEqual(product_reference("4820012345678", "test_shop_bot"), ("code", "4820012345678"))
-        self.assertEqual(product_reference("#1", "test_shop_bot"), ("id", "1"))
-        for invalid in ["https://evil.test", "https://t.me/other_bot?start=p_1", "p_0", ""]:
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                product_reference(invalid, "test_shop_bot")
-        with self.assertRaises(ValueError):
-            decode_image(b"not an image")
-
-    def test_box_barcode_photo_is_decoded_without_an_external_service(self):
-        code = zxingcpp.create_barcode("5901234123457", zxingcpp.BarcodeFormat.EAN13)
-        bitmap = zxingcpp.write_barcode_to_image(code, scale=3)
-        image = Image.fromarray(bitmap)
-        output = BytesIO()
-        image.save(output, format="PNG")
-        self.assertEqual(decode_image(output.getvalue()), ["5901234123457"])
 
     def test_backups_include_sales_access_and_settings_and_survive_reopen(self):
         sale = self.store.sell([dict(product_id=1, version=1, size="38", quantity=1, unit_price=100)], Actor(101, "Owner"), "s")

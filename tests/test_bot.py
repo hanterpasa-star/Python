@@ -235,6 +235,8 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
             task = self.app.bot_data["notification_task"]
             self.assertFalse(task.done())
             self.assertTrue(any(method == "setMyCommands" for method, _ in self.request.calls))
+            commands = next(data["commands"] for method, data in self.request.calls if method == "setMyCommands")
+            self.assertNotIn("scan", [command["command"] for command in commands])
         finally:
             await self.app.post_stop(self.app)
             await self.app.stop()

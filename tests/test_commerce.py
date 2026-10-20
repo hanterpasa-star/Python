@@ -117,18 +117,29 @@ class CommerceTests(unittest.TestCase):
         self.assertEqual(self.store.sale(sale["id"])["status"], "sold")
         self.assertEqual(self.report()["voided"], 0)
 
-    def test_unicode_search_categories_barcode_and_summary(self):
+    def test_unicode_search_categories_and_summary(self):
         self.assertEqual(self.store.page(query="БЕЛЫЕ")[0][0].id, self.a.id)
         self.assertEqual(self.store.page(query="38")[1], 1)
         self.assertEqual(self.store.page(query=f"#{self.b.id}")[0][0].id, self.b.id)
-        p = self.store.change(self.a.id, 1, "category", "Nike", self.actor)
-        self.store.change(p.id, p.version, "code", "4820012345678", self.actor)
+        self.store.change(self.a.id, 1, "category", "Nike", self.actor)
         self.assertEqual(self.store.page(category="Nike")[1], 1)
-        self.assertEqual(self.store.by_code("4820012345678").id, self.a.id)
-        with self.assertRaises(ValueError):
-            self.store.change(self.b.id, 1, "code", "4820012345678", self.actor)
         self.assertEqual(self.store.summary()["pairs"], 6)
         self.assertEqual(self.store.duplicates("  БЕЛЫЕ   nike ")[0].id, self.a.id)
+
+    def test_previous_database_with_obsolete_column_keeps_all_data(self):
+        # Earlier releases stored codes; upgrading must never discard the database.
+        self.store.grant(202)
+        with self.store.connect() as db:
+            db.execute("ALTER TABLE products ADD COLUMN code TEXT NOT NULL DEFAULT ''")
+            db.execute("UPDATE products SET code='4820012345678' WHERE id=?", (self.a.id,))
+        reopened = Store(self.path)
+        self.assertEqual(reopened.get(self.a.id), self.a)
+        reopened.change(self.a.id, 1, "rename", "Новое название", self.actor)
+        sale = reopened.sell([self.item(reopened.get(self.a.id))], self.actor, "after-upgrade")
+        self.assertEqual(sale["total"], 150050)
+        self.assertTrue(reopened.is_staff(202))
+        with reopened.connect() as db:
+            self.assertEqual(db.execute("SELECT code FROM products WHERE id=?", (self.a.id,)).fetchone()[0], "4820012345678")
 
     def test_kyiv_day_bounds_handle_dst_and_midnight(self):
         for day, expected in [(date(2026, 3, 29), 23), (date(2026, 10, 25), 25)]:

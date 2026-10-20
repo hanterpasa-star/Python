@@ -32,7 +32,6 @@ class Product:
     version: int
     archived: bool = False
     category: str = ""
-    code: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,7 +95,7 @@ class Store(InventoryFeatures):
 
     @staticmethod
     def _product(row: sqlite3.Row) -> Product:
-        return Product(row["id"], row["title"], row["photo"], json.loads(row["stock"]), row["version"], bool(row["archived"]), row["category"], row["code"])
+        return Product(row["id"], row["title"], row["photo"], json.loads(row["stock"]), row["version"], bool(row["archived"]), row["category"])
 
     def get(self, product_id: int) -> Product:
         with self.connect() as db:
@@ -115,7 +114,7 @@ class Store(InventoryFeatures):
         if query:
             q = " ".join(query.casefold().split())
             products = [p for p in products if q in p.title.casefold() or q.lstrip("#") == str(p.id)
-                        or q in p.stock or q == p.code.casefold()]
+                        or q in p.stock]
         if sort == "title":
             products.sort(key=lambda p: (p.title.casefold(), p.id))
         elif sort == "size":
@@ -132,7 +131,7 @@ class Store(InventoryFeatures):
             "actor_id": actor.id, "actor_name": " ".join(actor.name.split())[:60],
             "before_stock": before.stock if before else None,
             "before_title": before.title if before else None,
-            "category": product.category, "code": product.code,
+            "category": product.category,
         }
         payload.update(extra)
         payload["low_stock"] = [size for size, qty in (before.stock.items() if before else [])
@@ -165,7 +164,7 @@ class Store(InventoryFeatures):
             if old.version != version:
                 raise Conflict
             title, photo, stock, archived = old.title, old.photo, old.stock, False
-            category, code = old.category, old.code
+            category = old.category
             if action in {"add_sizes", "remove_sizes", "set_sizes"}:
                 stock = changed_stock(stock, action, value)
             elif action == "rename":
@@ -181,16 +180,12 @@ class Store(InventoryFeatures):
                 if category:
                     existing = db.execute("SELECT DISTINCT category FROM products WHERE category<>''").fetchall()
                     category = next((r[0] for r in existing if r[0].casefold() == category.casefold()), category)
-            elif action == "code":
-                code = self.validate_code(value)
-                if code and db.execute("SELECT 1 FROM products WHERE code=? AND id<>?", (code, old.id)).fetchone():
-                    raise ValueError("Этот код уже занят другим товаром.")
             else:
                 raise ValueError("Неизвестное действие.")
-            if (title, photo, stock, archived, category, code) == (old.title, old.photo, old.stock, old.archived, old.category, old.code):
+            if (title, photo, stock, archived, category) == (old.title, old.photo, old.stock, old.archived, old.category):
                 raise NoChange
-            product = Product(old.id, title, photo, stock, old.version + 1, archived, category, code)
-            db.execute("UPDATE products SET title=?,photo=?,stock=?,version=?,archived=?,category=?,code=? WHERE id=?", (title, photo, json.dumps(stock), product.version, int(archived), category, code, old.id))
+            product = Product(old.id, title, photo, stock, old.version + 1, archived, category)
+            db.execute("UPDATE products SET title=?,photo=?,stock=?,version=?,archived=?,category=? WHERE id=?", (title, photo, json.dumps(stock), product.version, int(archived), category, old.id))
             self._event(db, product, action, actor, old, targets)
         return product
 

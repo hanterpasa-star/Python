@@ -9,7 +9,6 @@ import time
 from telegram import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
 from telegram.error import TelegramError
 
-from .codes import decode_image, product_reference, qr_image
 from .commerce import KYIV, date_bounds, money, parse_date, parse_money, report_text
 from .stock import parse_stock
 
@@ -20,7 +19,6 @@ REPORT_BUTTON = "📊 Отчёты"
 SECTIONS_BUTTON = "🗂 Разделы"
 SUMMARY_BUTTON = "📋 Остатки"
 SALES_BUTTON = "🧾 Продажи и возвраты"
-SCAN_BUTTON = "🏷 Сканировать код"
 
 
 def new_draft(kind, stage, **fields):
@@ -101,7 +99,7 @@ class BotFeatures:
             context.user_data["catalog_filter"] = {"query": query[:100]}
             return await self.listing(update, context, "edit")
         context.user_data["draft"] = new_draft("search", "input")
-        await update.effective_message.reply_text("Введите название, размер (например 38), номер товара (#12) или штрихкод.\n/cancel — отмена.")
+        await update.effective_message.reply_text("Введите название, размер (например 38) или номер товара (#12).\n/cancel — отмена.")
 
     async def sections(self, update, context, page=0):
         if not await self.require_access(update, context):
@@ -130,32 +128,6 @@ class BotFeatures:
         text = f"📋 Остатки сейчас\nВсего моделей: {result['models']}\nМоделей в наличии: {result['available']}\nВсего пар: {result['pairs']}\n\n"
         text += "\n".join(f"{name}: {pairs} пар" for name, pairs in result["categories"].most_common())
         await reply_chunks(update.effective_message, text)
-
-    async def scan(self, update, context):
-        if not await self.require_access(update, context):
-            return
-        context.user_data["draft"] = new_draft("scan", "input")
-        if context.args:
-            return await self.scan_input(update, context, " ".join(context.args))
-        await update.effective_message.reply_text("Пришлите фото одного штрихкода или QR-кода. Можно просто написать код цифрами.\nПривязать штрихкод: /edit → товар → «Код».\n/cancel — отмена.")
-
-    async def scan_input(self, update, context, text):
-        from .storage import NotFound
-        message = update.effective_message
-        if message.photo:
-            photo = message.photo[-1]
-            if photo.file_size and photo.file_size > 10 * 1024 * 1024:
-                raise ValueError("Пришлите фото до 10 МБ.")
-            file = await photo.get_file()
-            data = await file.download_as_bytearray()
-            text = (await asyncio.to_thread(decode_image, bytes(data)))[0]
-        kind, value = product_reference(text, context.bot.username)
-        try:
-            product = self.store.get(int(value)) if kind == "id" else self.store.by_code(value)
-        except NotFound:
-            raise ValueError("Товар с таким кодом не найден. Проверьте код или привяжите его к товару через /edit.") from None
-        context.user_data.pop("draft", None)
-        await self.show_product(update, context, product.id, "edit")
 
     async def sell(self, update, context):
         if not await self.require_access(update, context):
@@ -386,8 +358,6 @@ class BotFeatures:
                 raise ValueError("Введите название, размер или номер товара.")
             context.user_data["catalog_filter"] = {"query": text[:100]}
             await self.listing(update, context, "edit")
-        elif draft["kind"] == "scan":
-            await self.scan_input(update, context, text)
         elif draft["kind"] == "sale":
             await self.sale_input(update, context, draft, text)
         elif draft["kind"] == "return":
@@ -492,10 +462,6 @@ class BotFeatures:
         elif parts == ["all_products"]:
             context.user_data.pop("catalog_filter", None)
             await self.listing(update, context)
-        elif name == "qr" and len(parts) == 2:
-            product = self.store.get(int(parts[1]))
-            data = await asyncio.to_thread(qr_image, product.id, context.bot.username)
-            await update.effective_message.reply_photo(data, caption=f"QR товара #{product.id} · {product.title}\nСканируйте камерой телефона или пришлите этот QR в /scan. Доступ к карточке есть только у сотрудников.")
         else:
             return False
         return True

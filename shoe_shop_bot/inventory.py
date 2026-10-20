@@ -3,7 +3,6 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
-import re
 import secrets
 import time
 
@@ -29,9 +28,7 @@ class InventoryFeatures:
             columns = {row[1] for row in db.execute("PRAGMA table_info(products)")}
             if "category" not in columns:
                 db.execute("ALTER TABLE products ADD COLUMN category TEXT NOT NULL DEFAULT ''")
-            if "code" not in columns:
-                db.execute("ALTER TABLE products ADD COLUMN code TEXT NOT NULL DEFAULT ''")
-            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS product_code ON products(code) WHERE code<>''")
+            # Leave obsolete columns in existing databases intact; no user data is dropped.
             # Statements are separate: executescript would commit a partial migration.
             for statement in SCHEMA:
                 db.execute(statement)
@@ -55,27 +52,10 @@ class InventoryFeatures:
             raise ValueError("Название раздела: от 1 до 50 символов. «-» — без раздела.")
         return value
 
-    @staticmethod
-    def validate_code(value):
-        value = value.strip()
-        if value == "-":
-            return ""
-        if value.startswith("p_") or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
-            raise ValueError("Код: до 64 латинских букв, цифр, точек, дефисов или _. «-» — убрать код.")
-        return value
-
     def duplicates(self, title):
         key = " ".join(title.casefold().split())
         products, _ = self.page(include_empty=True, limit=1_000_000)
         return [p for p in products if " ".join(p.title.casefold().split()) == key]
-
-    def by_code(self, code):
-        from .storage import NotFound
-        with self.connect() as db:
-            row = db.execute("SELECT * FROM products WHERE code=? AND code<>'' AND archived=0", (code,)).fetchone()
-        if row is None:
-            raise NotFound
-        return self._product(row)
 
     def categories(self):
         with self.connect() as db:
