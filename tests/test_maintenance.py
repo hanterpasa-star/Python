@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 from PIL import Image
@@ -63,6 +64,16 @@ class MaintenanceTests(unittest.TestCase):
             make_backup(self.store, now=now + timedelta(hours=6 * (i + 1)))
         self.assertEqual(len(list(directory.glob("auto-*.sqlite3"))), 28)
         self.assertEqual(manual.read_bytes(), b"keep")
+
+    def test_manual_and_periodic_backups_can_overlap_during_rotation(self):
+        for _ in range(27):
+            make_backup(self.store)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            paths = list(executor.map(lambda _: make_backup(self.store), range(3)))
+        self.assertEqual(len(set(paths)), 3)
+        self.assertEqual(len(list((self.store.path.parent / "backups").glob("auto-*.sqlite3"))), 28)
+        for path in paths:
+            self.assertEqual(Store(path).get(1).photo, "photo")
 
     def test_report_uses_kyiv_time_persists_queue_and_does_not_repeat(self):
         # October 20 Kyiv is UTC+3; 18:00 UTC is 21:00 Kyiv.

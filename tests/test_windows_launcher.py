@@ -5,7 +5,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import hashlib
 import json
 
 
@@ -62,17 +61,21 @@ class WindowsLauncherTests(unittest.TestCase):
                 child_env.pop(name, None)
             script = checkout / "deploy" / "windows-autostart.ps1"
             args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-            task = "ShoeShopBot-" + hashlib.sha256(str(checkout).lower().encode()).hexdigest()[:8].upper()
             try:
                 result = subprocess.run(args + ["-RegisterOnly"], env=child_env, capture_output=True, text=True, timeout=40)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                query = f"Get-ScheduledTask -TaskName '{task}' | Select-Object State,Actions,Triggers,Settings | ConvertTo-Json -Depth 5 -Compress"
-                result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", query], capture_output=True, text=True, timeout=20, check=True)
+                task = next(line.partition("=")[2].strip() for line in result.stdout.splitlines() if line.startswith("TaskName="))
+                self.assertRegex(task, r"^ShoeShopBot-[A-F0-9]{8}$")
+                query = (f"$t=Get-ScheduledTask -TaskName '{task}'; "
+                         "[PSCustomObject]@{Arguments=$t.Actions[0].Arguments; WorkingDirectory=$t.Actions[0].WorkingDirectory; "
+                         "ExecutionTimeLimit=$t.Settings.ExecutionTimeLimit; RestartCount=$t.Settings.RestartCount} | ConvertTo-Json -Compress")
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", query], capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 data = json.loads(result.stdout)
-                self.assertEqual(data["Actions"][0]["Arguments"], "-m shoe_shop_bot.supervisor")
-                self.assertEqual(Path(data["Actions"][0]["WorkingDirectory"]), checkout)
-                self.assertEqual(data["Settings"]["ExecutionTimeLimit"], "PT0S")
-                self.assertEqual(data["Settings"]["RestartCount"], 3)
+                self.assertEqual(data["Arguments"], "-m shoe_shop_bot.supervisor")
+                self.assertEqual(Path(data["WorkingDirectory"]).resolve(), checkout.resolve())
+                self.assertEqual(data["ExecutionTimeLimit"], "PT0S")
+                self.assertEqual(data["RestartCount"], 3)
                 self.assertFalse((checkout / "data").exists(), "Registration must not run the bot")
             finally:
                 subprocess.run(args + ["-Remove"], capture_output=True, timeout=30)

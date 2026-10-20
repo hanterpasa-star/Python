@@ -28,6 +28,7 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output "TaskName=$taskName"
 if (!$RegisterOnly) { Start-ScheduledTask -TaskName $taskName }
 Write-Host 'Automatic startup enabled. The bot starts now and at your next Windows sign-in.'
 Write-Host 'Keep the laptop powered on, awake and connected to the internet.'

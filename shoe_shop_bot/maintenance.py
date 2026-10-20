@@ -10,6 +10,12 @@ log = logging.getLogger(__name__)
 
 
 def make_backup(store, *, now=None) -> Path:
+    # A manual /backup may overlap the periodic worker. Serialize rotation too.
+    with store.backup_lock:
+        return _make_backup(store, now=now)
+
+
+def _make_backup(store, *, now=None) -> Path:
     now = now or datetime.now(timezone.utc)
     directory = store.path.parent / "backups"
     name = f"auto-{now:%Y%m%dT%H%M%S}-{secrets.token_hex(4)}.sqlite3"
@@ -25,7 +31,7 @@ def make_backup(store, *, now=None) -> Path:
     # Only rotate copies made by this function. Never remove manual/imported files.
     copies = sorted(directory.glob("auto-*.sqlite3"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in copies[28:]:
-        old.unlink()
+        old.unlink(missing_ok=True)
     return destination
 
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+import threading
 
 from .stock import changed_stock, validate_stock, validate_title
 from .inventory import InventoryFeatures
@@ -43,6 +44,7 @@ class Actor:
 class Store(InventoryFeatures):
     def __init__(self, path: Path):
         self.path = Path(path)
+        self.backup_lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")

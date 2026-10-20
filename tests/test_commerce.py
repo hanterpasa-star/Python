@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
@@ -139,7 +140,7 @@ class CommerceTests(unittest.TestCase):
 
     def test_real_legacy_schema_is_backed_up_and_migrated_without_losing_data(self):
         legacy = Path(self.temp.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db:
             db.executescript("""
                 CREATE TABLE products(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,photo TEXT NOT NULL,
                     stock TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,archived INTEGER NOT NULL DEFAULT 0);
@@ -157,7 +158,7 @@ class CommerceTests(unittest.TestCase):
         self.assertEqual(migrated.notification_chat(), -123)
         copies = list((legacy.parent / "backups").glob("before-upgrade-*.sqlite3"))
         self.assertEqual(len(copies), 1)
-        with sqlite3.connect(copies[0]) as db:
+        with closing(sqlite3.connect(copies[0])) as db:
             self.assertNotIn("category", [r[1] for r in db.execute("PRAGMA table_info(products)")])
         Store(legacy)
         self.assertEqual(len(list((legacy.parent / "backups").glob("before-upgrade-*.sqlite3"))), 1)
