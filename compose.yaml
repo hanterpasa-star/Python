@@ -1,0 +1,20 @@
+services:
+  bot:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ${BOT_ENV_FILE:-.env}
+    environment:
+      DATABASE_PATH: /var/lib/shoe-shop-bot/shop.sqlite3
+    volumes:
+      - shop-data:/var/lib/shoe-shop-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  shop-data:

@@ -14,3 +14,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -v
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: docker build -t shoe-shop-bot:ci .
+      - run: python tests/check_container.py
+      - name: Run application tests in the production image
+        run: docker run --rm --network none --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" --workdir /source shoe-shop-bot:ci python -m unittest discover -v

@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+.venv
+venv
+data
+backups
+import
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+*.sqlite3
+*.sqlite3-*
+*.db
+*.zip

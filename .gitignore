@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 data/
 backups/
+import/
 .coverage
 .pytest_cache/
 .ruff_cache/
