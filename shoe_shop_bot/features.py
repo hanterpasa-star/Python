@@ -371,7 +371,7 @@ class BotFeatures:
         counts = self.store.delivery_counts()
         notices = self.store.pending_notices()
         backup = self.store.setting("last_backup_time")
-        stamp = datetime.fromisoformat(backup).astimezone(KYIV).strftime("%d.%m.%Y %H:%M (Киев)") if backup else "ещё нет"
+        stamp = datetime.fromisoformat(backup).astimezone(KYIV).strftime("%d.%m.%Y %H:%M") + " (Киев)" if backup else "ещё нет"
         await update.effective_message.reply_text(
             f"Бот работает ✅\nУстройство: {socket.gethostname()}\nБез перезапуска: {hours} ч {rem // 60} мин\nСотрудников: {len(self.store.staff_ids())}\n"
             f"Последняя резервная копия: {stamp}\nКопия создаётся при запуске и каждые 6 часов.\n"
